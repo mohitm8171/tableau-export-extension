@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Export All Sheets</title>
+
+<!-- Same folder as this file -->
+<script src="tableau.extensions.1.latest.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; color: #1f2937; background: #fff; font-size: 13px; }
+  h1 { font-size: 15px; margin: 0 0 4px 0; }
+  p.sub { font-size: 12px; color: #6b7280; margin: 0 0 10px 0; }
+  .opt { margin: 4px 0; }
+  button { width: 100%; margin-top: 10px; padding: 10px; font-size: 13px; font-weight: 600; color: #fff; background: #1a73e8; border: 0; border-radius: 6px; cursor: pointer; }
+  button:disabled { background: #9ca3af; cursor: default; }
+  #status { margin-top: 8px; min-height: 16px; font-size: 12px; color: #374151; }
+  #status.error { color: #b91c1c; }
+</style>
+</head>
+<body>
+
+<h1>Export All Sheets</h1>
+<p class="sub">Downloads every worksheet on this dashboard, laid out like the dashboard.</p>
+
+<div class="opt">
+  <label><input type="radio" name="format" value="xlsx" checked> Excel (one tab per sheet)</label><br>
+  <label><input type="radio" name="format" value="csv"> CSV (all sheets in one file)</label>
+</div>
+
+<button id="exportBtn" disabled>Download</button>
+<div id="status"></div>
+
+<script>
+// <pure>
+// ---- Number formats, matched by measure name; first match wins. Edit freely. ----
+function fmtNum(v, d) {
+  return Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+const FORMAT_RULES = [
+  { test: /Conversion Rate/i, z: '0.00%',       text: v => (v * 100).toFixed(2) + '%' },
+  { test: /%|Rate/i,          z: '0.0%',        text: v => (v * 100).toFixed(1) + '%' },
+  { test: /Marketing Spend/i, z: '$#,##0.00',   text: v => '$' + fmtNum(v, 2) },
+  { test: /ROAS/i,            z: '$#,##0',      text: v => '$' + fmtNum(v, 0) },
+  { test: /AUR|AOV|Units Prod/i, z: '#,##0.00', text: v => fmtNum(v, 2) },
+  { test: /.*/,               z: '#,##0',       text: v => fmtNum(v, 0) }
+];
+function ruleFor(measureName) {
+  return FORMAT_RULES.find(r => r.test.test(measureName));
+}
+
+// A cell from Tableau -> { raw, text }. raw is a real number when the value is numeric.
+function toCellObj(cell) {
+  let raw = null;
+  if (cell.value !== null && cell.value !== undefined && cell.value !== '' && typeof cell.value !== 'boolean') {
+    const n = typeof cell.value === 'number' ? cell.value : Number(cell.value);
+    if (!isNaN(n)) raw = n;
+  }
+  const text = (cell.formattedValue === 'Null' || cell.formattedValue === undefined) ? '' : String(cell.formattedValue);
+  return { raw, text };
+}
+
+// Long layout (Measure Names / Measure Values) -> wide layout, in dashboard order.
+// Tableau returns both the measures and the rows in the reverse of the dashboard order,
+// so both lists are reversed here. Returns null if the sheet has no Measure Names column.
+function pivotSheet(cols, rows) {
+  const mn = cols.indexOf('Measure Names');
+  const mv = cols.indexOf('Measure Values');
+  if (mn === -1 || mv === -1) return null;
+  const dimIdx = cols.map((_, i) => i).filter(i => i !== mn && i !== mv);
+
+  const keys = [];            // row keys in order of first appearance
+  const cells = new Map();    // key -> Map(measure -> cellObj)
+  const measures = [];
+  for (const r of rows) {
+    const dims = dimIdx.map(i => r[i].text);
+    const key = JSON.stringify(dims);
+    if (!cells.has(key)) { cells.set(key, new Map()); keys.push({ key, dims }); }
+    const m = r[mn].text;
+    if (!measures.includes(m)) measures.push(m);
+    cells.get(key).set(m, r[mv]);
+  }
+  const measuresOut = measures.slice().reverse();
+  const keysOut = keys.slice().reverse();
+  return {
+    header: dimIdx.map(i => cols[i]).concat(measuresOut),
+    dimCount: dimIdx.length,
+    measures: measuresOut,
+    body: keysOut.map(k => ({ dims: k.dims, vals: measuresOut.map(m => cells.get(k.key).get(m) || { raw: null, text: '' }) }))
+  };
+}
+
+// Sheet -> a grid for the chosen format. mode 'xlsx' keeps numbers + a format grid; 'csv' returns text.
+function buildGrid(sheet, mode) {
+  const piv = pivotSheet(sheet.cols, sheet.rows);
+  if (!piv) {   // plain sheet: keep what the dashboard shows
+    return { aoa: [sheet.cols].concat(sheet.rows.map(r => r.map(c => c.text))), fmt: [] };
+  }
+  const aoa = [piv.header];
+  const fmt = [[]];
+  piv.body.forEach(row => {
+    const line = row.dims.slice();
+    const fl = row.dims.map(() => undefined);
+    row.vals.forEach((c, j) => {
+      const rule = ruleFor(piv.measures[j]);
+      if (c.raw === null) { line.push(c.text); fl.push(undefined); }
+      else if (mode === 'csv') { line.push(rule.text(c.raw)); fl.push(undefined); }
+      else { line.push(c.raw); fl.push(rule.z); }
+    });
+    aoa.push(line);
+    fmt.push(fl);
+  });
+  return { aoa, fmt };
+}
+// </pure>
+
+(function () {
+  const $ = id => document.getElementById(id);
+  const statusEl = $('status');
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg;
+    statusEl.className = isError ? 'error' : '';
+  }
+
+  function safeTabName(name, used) {
+    const base = name.replace(/[:\\\/\?\*\[\]]/g, ' ').trim().substring(0, 31) || 'Sheet';
+    let cand = base, i = 2;
+    while (used.has(cand)) {
+      const suf = ' (' + i++ + ')';
+      cand = base.substring(0, 31 - suf.length) + suf;
+    }
+    used.add(cand);
+    return cand;
+  }
+
+  async function readSheet(ws) {
+    const data = await ws.getSummaryDataAsync({ ignoreSelection: true, maxRows: 0 });
+    const seen = {};
+    const cols = data.columns.map(c => {
+      const n = c.fieldName;
+      seen[n] = (seen[n] || 0) + 1;
+      return seen[n] > 1 ? n + ' (' + seen[n] + ')' : n;
+    });
+    const rows = data.data.map(r => r.map(toCellObj));
+    return { name: ws.name, cols, rows };
+  }
+
+  function download(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  function sheetFromGrid(grid) {
+    const ws = XLSX.utils.aoa_to_sheet(grid.aoa);
+    grid.fmt.forEach((rowFmt, r) => rowFmt.forEach((z, c) => {
+      if (!z) return;
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (cell && cell.t === 'n') cell.z = z;
+    }));
+    ws['!cols'] = grid.aoa[0].map((h, i) => ({ wch: i === 0 ? 24 : Math.max(11, String(h).length + 2) }));
+    return ws;
+  }
+
+  async function doExport() {
+    $('exportBtn').disabled = true;
+    try {
+      const sheets = [];
+      for (const ws of tableau.extensions.dashboardContent.dashboard.worksheets) {
+        setStatus('Reading "' + ws.name + '"...');
+        sheets.push(await readSheet(ws));
+      }
+      const format = document.querySelector('input[name=format]:checked').value;
+      const stamp = new Date().toISOString().slice(0, 10);
+      setStatus('Building file...');
+
+      if (format === 'xlsx') {
+        const wb = XLSX.utils.book_new();
+        const used = new Set();
+        sheets.forEach(s => XLSX.utils.book_append_sheet(wb, sheetFromGrid(buildGrid(s, 'xlsx')), safeTabName(s.name, used)));
+        XLSX.writeFile(wb, 'Dashboard_Export_' + stamp + '.xlsx');
+      } else {
+        const all = [];
+        sheets.forEach(s => {
+          all.push([s.name]);
+          buildGrid(s, 'csv').aoa.forEach(r => all.push(r));
+          all.push([]);
+        });
+        const csv = '﻿' + XLSX.utils.sheet_to_csv(XLSX.utils.aoa_to_sheet(all));
+        download(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'Dashboard_Export_' + stamp + '.csv');
+      }
+      setStatus('Done. ' + sheets.length + ' sheet(s) exported.');
+    } catch (e) {
+      setStatus('Export failed: ' + (e && e.message ? e.message : e), true);
+    } finally {
+      $('exportBtn').disabled = false;
+    }
+  }
+
+  async function init() {
+    try {
+      await tableau.extensions.initializeAsync();
+      $('exportBtn').disabled = false;
+      $('exportBtn').addEventListener('click', doExport);
+    } catch (e) {
+      setStatus('Failed to initialize extension: ' + (e && e.message ? e.message : 'open this inside a Tableau dashboard'), true);
+    }
+  }
+  init();
+})();
+</script>
+</body>
+</html>
