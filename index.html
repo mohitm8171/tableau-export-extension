@@ -9,26 +9,28 @@
    <script src="xlsx.full.min.js"></script>
 
 <style>
-  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; color: #1f2937; background: #fff; font-size: 13px; }
-  h1 { font-size: 15px; margin: 0 0 4px 0; }
-  p.sub { font-size: 12px; color: #6b7280; margin: 0 0 10px 0; }
-  .opt { margin: 4px 0; }
-  button { width: 100%; margin-top: 10px; padding: 10px; font-size: 13px; font-weight: 600; color: #fff; background: #1a73e8; border: 0; border-radius: 6px; cursor: pointer; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    box-sizing: border-box; padding: 8px; color: #1f2937; background: #fff; font-size: 12px;
+    display: flex; flex-direction: column; justify-content: center; gap: 6px;
+  }
+  .opt { display: flex; justify-content: center; gap: 14px; }
+  .opt label { cursor: pointer; white-space: nowrap; }
+  button { width: 100%; padding: 8px; font-size: 13px; font-weight: 600; color: #fff; background: #1a73e8; border: 0; border-radius: 6px; cursor: pointer; }
   button:disabled { background: #9ca3af; cursor: default; }
-  #status { margin-top: 8px; min-height: 16px; font-size: 12px; color: #374151; }
+  #status { min-height: 14px; max-height: 28px; overflow: hidden; text-align: center; font-size: 11px; line-height: 14px; color: #374151; }
   #status.error { color: #b91c1c; }
 </style>
 </head>
 <body>
 
-<h1>Export All Sheets</h1>
-<!-- p class="sub">Downloads every worksheet on this dashboard, laid out like the dashboard.</p -->
-
 <div class="opt">
-  <label><input type="radio" name="format" value="xlsx" checked> Excel</label><br>
-  <label><input type="radio" name="format" value="csv"> CSV</label>
+  <label title="One tab per sheet"><input type="radio" name="format" value="xlsx" checked> Excel</label>
+  <label title="All sheets in one file"><input type="radio" name="format" value="csv"> CSV</label>
 </div>
-<button id="exportBtn" disabled>Download</button>
+
+<button id="exportBtn" disabled>Export All</button>
 <div id="status"></div>
 
 <script>
@@ -120,6 +122,7 @@ function buildGrid(sheet, mode) {
 
   function setStatus(msg, isError) {
     statusEl.textContent = msg;
+     statusEl.title = msg;
     statusEl.className = isError ? 'error' : '';
   }
 
